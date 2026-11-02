@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>随机 A 股行情</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+        html, body {
+            height: 100%;
+            background: #f5f6f8;
+            font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC",
+                         "Microsoft YaHei", sans-serif;
+            color: #222;
+            font-size: 15px;
+        }
+
+        .app {
+            max-width: 520px;
+            margin: 0 auto;
+            padding: 16px 14px 40px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+        }
+        .title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+        .subtitle {
+            font-size: 12px;
+            color: #999;
+            margin-top: 2px;
+        }
+
+        .btn-refresh {
+            background: #1677ff;
+            color: #fff;
+            border: none;
+            border-radius: 22px;
+            padding: 9px 18px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(22,119,255,0.3);
+            transition: opacity .15s;
+        }
+        .btn-refresh:active { opacity: 0.75; }
+        .btn-refresh[disabled] {
+            background: #b0c7e8;
+            box-shadow: none;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 0;
+            color: #888;
+            font-size: 14px;
+        }
+        .loading .spinner {
+            display: inline-block;
+            width: 26px; height: 26px;
+            border: 3px solid #e0e0e0;
+            border-top-color: #1677ff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-bottom: 10px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .empty {
+            text-align: center;
+            padding: 50px 0;
+            color: #aaa;
+            font-size: 14px;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 10px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+        }
+        .card-top {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .stock-name {
+            font-size: 16px;
+            font-weight: 600;
+            color: #1a1a1a;
+        }
+        .stock-code {
+            font-size: 12px;
+            color: #999;
+            margin-left: 6px;
+        }
+        .price {
+            font-size: 22px;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        .pct {
+            font-size: 13px;
+            margin-left: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 500;
+        }
+        .up   { color: #e63946; }        /* 涨 -> 红 */
+        .down { color: #2ba471; }        /* 跌 -> 绿 */
+        .flat { color: #666; }
+        .pct.up   { background: rgba(230,57,70,0.08); }
+        .pct.down { background: rgba(43,164,113,0.10); }
+        .pct.flat { background: #f0f0f0; }
+
+        .card-bottom {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 16px;
+            font-size: 12px;
+            color: #666;
+        }
+        .card-bottom .item span.label { color: #aaa; margin-right: 4px; }
+        .card-bottom .item span.val { color: #333; font-variant-numeric: tabular-nums; }
+
+        .na {
+            color: #bbb;
+            font-size: 13px;
+        }
+        .na-hint {
+            font-size: 12px;
+            color: #bbb;
+            margin-top: 6px;
+        }
+
+        .footer {
+            text-align: center;
+            font-size: 11px;
+            color: #bbb;
+            margin-top: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="header">
+            <div>
+                <div class="title">随机 A 股行情</div>
+                <div class="subtitle" id="subtitle">加载中…</div>
+            </div>
+            <button class="btn-refresh" id="btn">换一批</button>
+        </div>
+
+        <div id="list"></div>
+
+        <div class="footer">数据来源：东方财富 · 仅供学习参考</div>
+    </div>
+
+    <script>
+        const btn     = document.getElementById('btn');
+        const listEl  = document.getElementById('list');
+        const subEl   = document.getElementById('subtitle');
+
+        function fmtNum(v, digits = 2) {
+            if (v === null || v === undefined || isNaN(v)) return '—';
+            return Number(v).toLocaleString('zh-CN', {
+                minimumFractionDigits: digits,
+                maximumFractionDigits: digits,
+            });
+        }
+        function fmtVol(v) {
+            if (v === null || v === undefined || isNaN(v)) return '—';
+            const n = Number(v);
+            if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
+            if (n >= 1e4) return (n / 1e4).toFixed(2) + ' 万';
+            return n.toFixed(0);
+        }
+        function pctClass(v) {
+            if (v === null || v === undefined || isNaN(v)) return 'flat';
+            if (v > 0) return 'up';
+            if (v < 0) return 'down';
+            return 'flat';
+        }
+        function pctText(v) {
+            if (v === null || v === undefined || isNaN(v)) return '—';
+            const sign = v > 0 ? '+' : '';
+            return sign + Number(v).toFixed(2) + '%';
+        }
+
+        function renderLoading(msg = '正在获取行情…') {
+            listEl.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div>${msg}</div>
+                </div>`;
+        }
+
+        function renderEmpty(msg) {
+            listEl.innerHTML = `<div class="empty">${msg}</div>`;
+        }
+
+        function render(list) {
+            if (!list.length) {
+                renderEmpty('没有数据');
+                return;
+            }
+            const html = list.map(s => {
+                const hasPrice = s['最新价'] !== null && s['最新价'] !== undefined;
+                if (!hasPrice) {
+                    return `
+                        <div class="card">
+                            <div class="card-top">
+                                <div>
+                                    <span class="stock-name">${s['名称'] || ''}</span>
+                                    <span class="stock-code">${s['代码'] || ''}</span>
+                                </div>
+                                <span class="na">—</span>
+                            </div>
+                            <div class="na-hint">实时行情暂不可用</div>
+                        </div>`;
+                }
+                const cls = pctClass(s['涨跌幅']);
+                return `
+                    <div class="card">
+                        <div class="card-top">
+                            <div>
+                                <span class="stock-name">${s['名称'] || ''}</span>
+                                <span class="stock-code">${s['代码'] || ''}</span>
+                            </div>
+                            <div>
+                                <span class="price ${cls}">${fmtNum(s['最新价'])}</span>
+                                <span class="pct ${cls}">${pctText(s['涨跌幅'])}</span>
+                            </div>
+                        </div>
+                        <div class="card-bottom">
+                            <div class="item"><span class="label">成交量</span><span class="val">${fmtVol(s['成交量'])}</span></div>
+                            <div class="item"><span class="label">换手率</span><span class="val ${cls}">${fmtNum(s['换手率'])}%</span></div>
+                        </div>
+                    </div>`;
+            }).join('');
+            listEl.innerHTML = html;
+        }
+
+        async function load() {
+            btn.disabled = true;
+            renderLoading('正在获取行情…');
+            try {
+                const res = await fetch('/api/random-five');
+                const data = await res.json();
+                if (!data.ok) {
+                    renderEmpty(data.msg || '服务暂不可用');
+                    subEl.textContent = '加载失败';
+                    return;
+                }
+                render(data.stocks || []);
+                subEl.textContent = `命中 ${data.fetched}/${data.requested}`;
+            } catch (e) {
+                renderEmpty('网络异常，请检查后端是否启动');
+                subEl.textContent = '请求失败';
+            } finally {
+                btn.disabled = false;
+            }
+        }
+
+        btn.addEventListener('click', load);
+
+        // 页面打开自动加载
+        load();
+    </script>
+</body>
+</html>
