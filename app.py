@@ -7,6 +7,7 @@
 """
 import random
 import logging
+import math
 
 import akshare as ak
 import pandas as pd
@@ -129,6 +130,103 @@ def fetch_realtime_quotes(codes: list[str]) -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# 评分：换手率（健康区间） + 成交量（绝对值，单位：手）
+# 综合分 = 换手率 70% + 成交量 30%；星级由综合分映射
+# ---------------------------------------------------------------------------
+_TURNOVER_CURVE = [
+    (0.0, 10.0),   # 几乎没换手
+    (0.5, 30.0),
+    (1.0, 45.0),
+    (2.0, 65.0),
+    (3.0, 80.0),
+    (5.0, 95.0),
+    (8.0, 100.0),  # 活跃但不极端
+    (15.0, 70.0),  # 偏过热
+    (25.0, 45.0),
+    (40.0, 20.0),  # 极端换手
+]
+
+# 成交量按对数刻度映射（1 手 = 100 股）：
+# 5000 手 20 分、1 万手 35 分、5 万手 60 分、20 万手 80 分、100 万手 95 分
+_VOLUME_CURVE = [
+    (1e3, 0.0),
+    (5e3, 20.0),
+    (1e4, 35.0),
+    (5e4, 60.0),
+    (2e5, 80.0),
+    (1e6, 95.0),
+    (3e6, 100.0),
+]
+
+_STAR_LEVELS = [
+    (85.0, 5, "极热"),
+    (70.0, 4, "活跃"),
+    (55.0, 3, "温和"),
+    (40.0, 2, "平淡"),
+    (0.0, 1, "冷清"),
+]
+
+
+def _interp(x: float, points: list[tuple[float, float]]) -> float:
+    """分段线性插值，超出两端时取端点值。"""
+    if x <= points[0][0]:
+        return points[0][1]
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if x <= x1:
+            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+    return points[-1][1]
+
+
+def _turnover_score(turnover: float | None) -> float | None:
+    """换手率 0-100 分：3%~8% 为健康活跃区间，过低或过高都扣分。"""
+    if turnover is None or turnover < 0:
+        return None
+    return _interp(float(turnover), _TURNOVER_CURVE)
+
+
+def _volume_score(volume: float | None) -> float | None:
+    """成交量 0-100 分：按手数取对数映射，量越大分越高。"""
+    if volume is None or volume < 0:
+        return None
+    if volume == 0:
+        return 0.0
+    curve = [(math.log10(x), y) for x, y in _VOLUME_CURVE]
+    return _interp(math.log10(volume), curve)
+
+
+def score_stocks(stocks: list[dict]) -> None:
+    """就地写入 成交量评分 / 换手率评分 / 综合评分 / 星级 / 评级。"""
+    for stock in stocks:
+        vol_score = _volume_score(stock.get("成交量"))
+        turn_score = _turnover_score(stock.get("换手率"))
+        stock["成交量评分"] = round(vol_score) if vol_score is not None else None
+        stock["换手率评分"] = round(turn_score) if turn_score is not None else None
+
+        parts = []
+        if turn_score is not None:
+            parts.append((turn_score, 0.7))
+        if vol_score is not None:
+            parts.append((vol_score, 0.3))
+
+        if not parts:
+            stock["综合评分"] = None
+            stock["星级"] = None
+            stock["评级"] = "无数据"
+            continue
+
+        # 缺失某项时按剩余权重归一化
+        total_weight = sum(w for _, w in parts)
+        score = sum(v * w for v, w in parts) / total_weight
+        stock["综合评分"] = round(score)
+
+        for threshold, stars, label in _STAR_LEVELS:
+            if score >= threshold:
+                stock["星级"] = stars
+                stock["评级"] = label
+                break
+
+
+# ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
 @app.route("/")
@@ -163,6 +261,8 @@ def api_random_five():
                 "成交量": None,
                 "换手率": None,
             })
+
+    score_stocks(stocks_out)
 
     ok_count = sum(1 for s in stocks_out if s["最新价"] is not None)
     return jsonify({

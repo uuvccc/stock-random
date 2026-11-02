@@ -9,6 +9,7 @@ A small Flask web app that picks five A-share (Chinese stock market) tickers at 
 - Fetches all-market real-time data from East Money (via `akshare`) in a single batch instead of one request per ticker — faster and much less likely to be rate limited
 - Graceful degradation: tickers with no available quote are still returned with empty fields, and a failed quote fetch never crashes the request
 - Mobile-friendly single page UI with a "换一批" (refresh) button; price/change is colored red for gains and green for losses, following the Chinese market convention
+- Each sampled ticker gets a volume/turnover score and a 1–5 star rating (`成交量评分`, `换手率评分`, `综合评分`, `星级`, `评级`)
 
 ## Tech stack
 
@@ -56,16 +57,30 @@ Returns five randomly sampled tickers with live quotes.
       "名称": "浦发银行",
       "最新价": 7.21,
       "涨跌幅": 1.26,
-      "成交量": 32541200.0,
-      "换手率": 0.41
+      "成交量": 452300.0,
+      "换手率": 1.62,
+      "成交量评分": 88,
+      "换手率评分": 57,
+      "综合评分": 66,
+      "星级": 3,
+      "评级": "温和"
     }
   ]
 }
 ```
 
 - `requested` is always `5`; `fetched` is how many of them actually had a quote
-- Fields may be `null` when the quote was unavailable for that ticker
+- Fields may be `null` when the quote was unavailable for that ticker (`综合评分` / `星级` are `null` and `评级` is `无数据` when both inputs are missing)
 - If the stock list has not been loaded yet, the endpoint returns HTTP 503 with `{"ok": false, "msg": "..."}`
+
+### Scoring
+
+Each ticker is rated on two metrics, then mapped to 1–5 stars:
+
+- **换手率评分 (0–100, weight 70%)** — piecewise curve peaking at 3%–8% turnover; very low turnover (illiquid) and extreme turnover (>15%, overheated) both lose points
+- **成交量评分 (0–100, weight 30%)** — log-scaled by volume in lots (`手`, 1 lot = 100 shares); 1万手 ≈ 35, 5万手 ≈ 60, 20万手 ≈ 80, 100万手+ ≈ 95+
+- **综合评分** = 0.7 × turnover score + 0.3 × volume score (weights renormalized if one value is missing)
+- **星级**: ≥85 → 5★ 极热, ≥70 → 4★ 活跃, ≥55 → 3★ 温和, ≥40 → 2★ 平淡, else 1★ 冷清
 
 ## Project structure
 
