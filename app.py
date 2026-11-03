@@ -8,6 +8,7 @@
 import random
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import akshare as ak
 import pandas as pd
@@ -58,24 +59,41 @@ def load_all_stocks() -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# 实时行情抓取：一次性拉取东方财富全市场实时行情，再按代码筛选
-# （批量拉比逐只请求稳得多，也省频率）
+# 实时行情抓取：逐只调用 stock_bid_ask_em（单只约 0.1s），5 只并发
+# 全市场接口 stock_zh_a_spot_em 实测要一分钟级，不适合每次请求都调
 # ---------------------------------------------------------------------------
-_realtime_columns_map = {
-    # 统一字段名 -> akshare 可能的列名（按优先级）
-    "代码": ["代码", "symbol", "code"],
-    "最新价": ["最新价", "current", "现价"],
-    "涨跌幅": ["涨跌幅", "changepercent", "涨跌幅(%)"],
-    "成交量": ["成交量", "volume"],
-    "换手率": ["换手率", "turnover", "换手率(%)"],
+_quote_item_map = {
+    # 统一字段名 -> stock_bid_ask_em 返回的 item 名
+    "最新价": "最新",
+    "涨跌幅": "涨幅",
+    "成交量": "总手",
+    "换手率": "换手",
 }
 
+_QUOTE_TIMEOUT = 10.0  # 单只请求软超时（秒），防止某只卡死拖垮整个请求
 
-def _pick_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
+
+def _to_float(v) -> float | None:
+    try:
+        return float(v) if v is not None and pd.notna(v) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_one_quote(code: str) -> dict | None:
+    """拉单只个股实时行情，返回统一字段；失败返回 None。"""
+    try:
+        df = ak.stock_bid_ask_em(symbol=code)
+        if df is None or df.empty:
+            return None
+        kv = dict(zip(df["item"], df["value"]))
+        item = {"代码": code}
+        for field, key in _quote_item_map.items():
+            item[field] = _to_float(kv.get(key))
+        return item
+    except Exception as exc:
+        log.warning("个股行情获取失败 %s: %s", code, exc)
+        return None
 
 
 def fetch_realtime_quotes(codes: list[str]) -> dict[str, dict]:
@@ -84,48 +102,23 @@ def fetch_realtime_quotes(codes: list[str]) -> dict[str, dict]:
     获取失败的个股直接不出现。
     """
     result: dict[str, dict] = {}
-    try:
-        df = ak.stock_zh_a_spot_em()
-        if df is None or df.empty:
-            log.warning("stock_zh_a_spot_em 返回空")
-            return result
-
-        col_code = _pick_col(df, _realtime_columns_map["代码"])
-        col_price = _pick_col(df, _realtime_columns_map["最新价"])
-        col_pct = _pick_col(df, _realtime_columns_map["涨跌幅"])
-        col_vol = _pick_col(df, _realtime_columns_map["成交量"])
-        col_turn = _pick_col(df, _realtime_columns_map["换手率"])
-
-        if col_code is None:
-            log.error("实时行情表找不到代码列，实际列: %s", list(df.columns))
-            return result
-
-        code_set = set(codes)
-        for _, row in df.iterrows():
+    workers = max(1, min(5, len(codes)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_fetch_one_quote, c): c for c in codes}
+        for fut in as_completed(futures):
+            code = futures[fut]
             try:
-                code = str(row[col_code]).strip()
-                if code not in code_set:
-                    continue
-                item = {"代码": code}
-                if col_price is not None:
-                    item["最新价"] = float(row[col_price]) if pd.notna(row[col_price]) else None
-                if col_pct is not None:
-                    item["涨跌幅"] = float(row[col_pct]) if pd.notna(row[col_pct]) else None
-                if col_vol is not None:
-                    item["成交量"] = float(row[col_vol]) if pd.notna(row[col_vol]) else None
-                if col_turn is not None:
-                    item["换手率"] = float(row[col_turn]) if pd.notna(row[col_turn]) else None
-                # 名称从 ALL_STOCKS 缓存补，避免实时表列名差异
-                name = next((n for c, n in ALL_STOCKS if c == code), "")
-                item["名称"] = name
-                result[code] = item
+                item = fut.result(timeout=_QUOTE_TIMEOUT)
             except Exception as exc:
-                log.warning("解析单行行情失败: %s", exc)
+                log.warning("个股行情超时/异常 %s: %s", code, exc)
                 continue
+            if item is None:
+                continue
+            # 名称从 ALL_STOCKS 缓存补
+            item["名称"] = next((n for c, n in ALL_STOCKS if c == code), "")
+            result[code] = item
 
-        log.info("实时行情获取完成，命中 %d / 请求 %d", len(result), len(codes))
-    except Exception as exc:
-        log.exception("获取实时行情异常: %s", exc)
+    log.info("实时行情获取完成，命中 %d / 请求 %d", len(result), len(codes))
     return result
 
 
