@@ -103,20 +103,26 @@ def fetch_realtime_quotes(codes: list[str]) -> dict[str, dict]:
     """
     result: dict[str, dict] = {}
     workers = max(1, min(5, len(codes)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_fetch_one_quote, c): c for c in codes}
-        for fut in as_completed(futures):
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = {pool.submit(_fetch_one_quote, c): c for c in codes}
+    try:
+        for fut in as_completed(futures, timeout=_QUOTE_TIMEOUT):
             code = futures[fut]
             try:
-                item = fut.result(timeout=_QUOTE_TIMEOUT)
+                item = fut.result()
             except Exception as exc:
-                log.warning("个股行情超时/异常 %s: %s", code, exc)
+                log.warning("个股行情异常 %s: %s", code, exc)
                 continue
             if item is None:
                 continue
             # 名称从 ALL_STOCKS 缓存补
             item["名称"] = next((n for c, n in ALL_STOCKS if c == code), "")
             result[code] = item
+    except TimeoutError:
+        log.warning("实时行情整体超时（%ds），已返回 %d 只", _QUOTE_TIMEOUT, len(result))
+    finally:
+        # 不等待卡住的线程，立即返回已拿到的结果
+        pool.shutdown(wait=False, cancel_futures=True)
 
     log.info("实时行情获取完成，命中 %d / 请求 %d", len(result), len(codes))
     return result

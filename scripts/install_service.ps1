@@ -1,4 +1,4 @@
-#Requires -RunAsAdministrator
+﻿#Requires -RunAsAdministrator
 # stock-random 安装为 Windows 系统服务（NSSM）
 # 用法：右键 PowerShell 运行，或在管理员 PowerShell 中执行：
 #   powershell -ExecutionPolicy Bypass -File scripts\install_service.ps1

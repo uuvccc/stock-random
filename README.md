@@ -6,7 +6,8 @@ A small Flask web app that picks five A-share (Chinese stock market) tickers at 
 
 - Loads the full A-share code/name list once at startup and keeps it in memory
 - `GET /api/random-five` samples five distinct tickers and returns live quotes
-- Fetches all-market real-time data from East Money (via `akshare`) in a single batch instead of one request per ticker — faster and much less likely to be rate limited
+- Fetches quotes per ticker via `ak.stock_bid_ask_em` (~0.1s each), 5 in parallel with a thread pool, so one refresh takes about 0.1–0.2s
+- Per-request hard timeout (10s): stuck fetches are dropped and partial results are returned immediately
 - Graceful degradation: tickers with no available quote are still returned with empty fields, and a failed quote fetch never crashes the request
 - Mobile-friendly single page UI with a "换一批" (refresh) button; price/change is colored red for gains and green for losses, following the Chinese market convention
 - Each sampled ticker gets a volume/turnover score and a 1–5 star rating (`成交量评分`, `换手率评分`, `综合评分`, `星级`, `评级`)
@@ -94,7 +95,7 @@ stock-random/
 Key pieces in [app.py](app.py):
 
 - `load_all_stocks()` — builds the in-memory `(code, name)` list at startup
-- `fetch_realtime_quotes()` — one-shot all-market quote fetch, filtered down to the sampled codes
+- `fetch_realtime_quotes()` — fetches each sampled ticker via `stock_bid_ask_em` in parallel threads, with a 10s overall timeout
 - `api_random_five()` — sampling plus response assembly
 
 ## Notes
