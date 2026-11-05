@@ -1,7 +1,7 @@
-﻿﻿# stock-random 服务实时状态监控
-# 用法：
-#   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1          # 每 3 秒刷新
-#   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1 -Once    # 只看一次
+# stock-random: live service status monitor
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1          # refresh every 3s
+#   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1 -Once    # single snapshot
 #   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1 -Interval 5
 param(
     [switch]$Once,
@@ -16,19 +16,19 @@ $Url = "http://127.0.0.1:8080/"
 
 function Show-Status {
     Clear-Host
-    Write-Host "=== stock-random 状态监控 ===  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
+    Write-Host "=== stock-random status monitor ===  $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
     Write-Host ""
 
-    # 1. Windows 服务状态
+    # 1. Windows service status
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($svc) {
         $color = if ($svc.Status -eq "Running") { "Green" } else { "Red" }
-        Write-Host ("[服务] {0,-10} 启动类型: {1}" -f $svc.Status, $svc.StartType) -ForegroundColor $color
+        Write-Host ("[Service] {0,-10} StartType: {1}" -f $svc.Status, $svc.StartType) -ForegroundColor $color
     } else {
-        Write-Host "[服务] 未安装（先运行 install_service.bat）" -ForegroundColor Yellow
+        Write-Host "[Service] not installed (run install_service.bat first)" -ForegroundColor Yellow
     }
 
-    # 2. 守护进程 / app 进程信息
+    # 2. Supervisor / app process info
     $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
         Where-Object { $_.CommandLine -match "run_service\.py|app\.py" }
     if ($procs) {
@@ -36,43 +36,43 @@ function Show-Status {
             $ws = [math]::Round($p.WorkingSetSize / 1MB, 1)
             $start = $p.CreationDate
             $up = (Get-Date) - $start
-            $role = if ($p.CommandLine -match "run_service\.py") { "守护" } else { "app  " }
-            Write-Host ("[进程] {0} pid={1,-7} 内存={2,7}MB  已运行={3:hh\:mm\:ss}" -f $role, $p.ProcessId, $ws, $up) -ForegroundColor Green
+            $role = if ($p.CommandLine -match "run_service\.py") { "supervisor" } else { "app       " }
+            Write-Host ("[Process] {0} pid={1,-7} mem={2,7}MB  up={3:hh\:mm\:ss}" -f $role, $p.ProcessId, $ws, $up) -ForegroundColor Green
         }
     } else {
-        Write-Host "[进程] 未发现守护/app 进程" -ForegroundColor Red
+        Write-Host "[Process] no supervisor/app process found" -ForegroundColor Red
     }
 
-    # 3. 端口监听
+    # 3. Port listening
     $conn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
     if ($conn) {
-        Write-Host "[端口] 8080 监听中 (pid=$($conn[0].OwningProcess))" -ForegroundColor Green
+        Write-Host "[Port] 8080 listening (pid=$($conn[0].OwningProcess))" -ForegroundColor Green
     } else {
-        Write-Host "[端口] 8080 未监听" -ForegroundColor Red
+        Write-Host "[Port] 8080 not listening" -ForegroundColor Red
     }
 
-    # 4. HTTP 健康检查
+    # 4. HTTP health check
     try {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5
         $sw.Stop()
         Write-Host "[HTTP] $($r.StatusCode) OK  $($sw.ElapsedMilliseconds)ms  ($Url)" -ForegroundColor Green
     } catch {
-        Write-Host "[HTTP] 访问失败: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[HTTP] request failed: $($_.Exception.Message)" -ForegroundColor Red
     }
 
-    # 5. 最新日志
+    # 5. Latest logs
     Write-Host ""
-    Write-Host "--- service.log 最后 $LogLines 行 ---" -ForegroundColor DarkCyan
+    Write-Host "--- last $LogLines lines of service.log ---" -ForegroundColor DarkCyan
     if (Test-Path $LogFile) {
         Get-Content $LogFile -Tail $LogLines -Encoding UTF8
     } else {
-        Write-Host "(暂无日志文件)"
+        Write-Host "(no log file yet)"
     }
 
     if (-not $Once) {
         Write-Host ""
-        Write-Host "每 $Interval 秒刷新，Ctrl+C 退出" -ForegroundColor DarkGray
+        Write-Host "Refreshing every $Interval s, Ctrl+C to quit" -ForegroundColor DarkGray
     }
 }
 

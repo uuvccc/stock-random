@@ -1,6 +1,6 @@
-﻿﻿#Requires -RunAsAdministrator
-# stock-random 安装为 Windows 系统服务（NSSM）
-# 用法：右键 PowerShell 运行，或在管理员 PowerShell 中执行：
+#Requires -RunAsAdministrator
+# stock-random: install as Windows service via NSSM
+# Usage (admin PowerShell):
 #   powershell -ExecutionPolicy Bypass -File scripts\install_service.ps1
 $ErrorActionPreference = "Stop"
 
@@ -9,8 +9,8 @@ $Root = Split-Path -Parent $PSScriptRoot
 $Nssm = Join-Path $Root "tools\nssm.exe"
 $VenvPy = Join-Path $Root ".venv\Scripts\python.exe"
 $LogDir = Join-Path $Root "logs"
-$GitPullInterval = 300   # git pull 间隔（秒），0 关闭
-$WatchEnabled = 1        # 文件变化热加载，0 关闭
+$GitPullInterval = 300   # git pull interval in seconds, 0 = disabled
+$WatchEnabled = 1        # hot reload on file change, 0 = disabled
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 Start-Transcript -Path (Join-Path $LogDir "install.log") -Force | Out-Null
@@ -22,33 +22,33 @@ function Update-SessionPath {
 
 function Install-WithWinget([string]$Id, [string]$Name) {
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        throw "缺少 $Name，且系统无 winget，请手动安装后重试"
+        throw "Missing $Name and winget is not available. Please install $Name manually."
     }
-    Write-Host "[INFO] 使用 winget 安装 $Name ..."
+    Write-Host "[INFO] Installing $Name via winget ..."
     winget install -e --id $Id --accept-source-agreements --accept-package-agreements --silent
-    if ($LASTEXITCODE -ne 0) { throw "$Name 安装失败 (winget exit=$LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) { throw "$Name install failed (winget exit=$LASTEXITCODE)" }
     Update-SessionPath
 }
 
-# 0. 自动补齐缺失依赖：Python / Git / NSSM
+# 0. Auto-install missing prerequisites: Python / Git / NSSM
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Host "[INFO] 未检测到 Python，自动安装..."
+    Write-Host "[INFO] Python not found, installing ..."
     Install-WithWinget "Python.Python.3.12" "Python"
     if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-        throw "Python 安装后仍不可用，请重开终端后重试"
+        throw "Python still not available after install. Open a new terminal and retry."
     }
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-    Write-Host "[INFO] 未检测到 Git（定时 git pull 需要），自动安装..."
+    Write-Host "[INFO] Git not found (needed for scheduled git pull), installing ..."
     Install-WithWinget "Git.Git" "Git"
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        Write-Host "[WARN] Git 安装后仍不可用，定时 git pull 将不生效"
+        Write-Host "[WARN] Git still not available; scheduled git pull will not work."
     }
 }
 
 if (-not (Test-Path $Nssm)) {
-    Write-Host "[INFO] 未检测到 NSSM，自动下载到 tools\ ..."
+    Write-Host "[INFO] NSSM not found, downloading to tools\ ..."
     New-Item -ItemType Directory -Force -Path (Join-Path $Root "tools") | Out-Null
     $zip = Join-Path $Root "tools\nssm.zip"
     Invoke-WebRequest -Uri "https://nssm.cc/release/nssm-2.24.zip" -OutFile $zip -UseBasicParsing
@@ -57,55 +57,55 @@ if (-not (Test-Path $Nssm)) {
     Remove-Item -Recurse -Force (Join-Path $Root "tools\nssm-tmp"), $zip
 }
 
-# 1. 准备虚拟环境并幂等安装 Python 依赖
+# 1. Prepare venv and install Python deps (idempotent)
 if (-not (Test-Path $VenvPy)) {
-    Write-Host "[INFO] 创建虚拟环境 .venv ..."
+    Write-Host "[INFO] Creating virtualenv .venv ..."
     python -m venv (Join-Path $Root ".venv")
 }
-Write-Host "[INFO] 安装/更新依赖（已满足的会跳过）..."
+Write-Host "[INFO] Installing/updating deps (already-satisfied ones are skipped) ..."
 & $VenvPy -m pip install --quiet --upgrade pip
 & $VenvPy -m pip install --quiet -r (Join-Path $Root "requirements.txt")
-if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
-# 2. 若服务已存在先卸载
+# 2. Remove existing service instance first
 & $Nssm status $ServiceName *> $null
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "[INFO] 服务已存在，先移除旧实例..."
+    Write-Host "[INFO] Service already exists, removing old instance ..."
     & $Nssm stop $ServiceName *> $null
     & $Nssm remove $ServiceName confirm *> $null
 }
 
-# 3. 注册服务
-Write-Host "[INFO] 注册服务 $ServiceName ..."
+# 3. Register service
+Write-Host "[INFO] Registering service $ServiceName ..."
 & $Nssm install $ServiceName $VenvPy "run_service.py"
 & $Nssm set $ServiceName AppDirectory $Root
-& $Nssm set $ServiceName DisplayName "stock-random (Flask A股随机行情)"
-& $Nssm set $ServiceName Description "随机A股行情服务。守护进程自动重启、定时git pull、文件变化热加载。"
+& $Nssm set $ServiceName DisplayName "stock-random (Flask A-share random quotes)"
+& $Nssm set $ServiceName Description "Random A-share quote service. Supervisor auto-restarts app, runs scheduled git pull, and hot-reloads on file changes."
 & $Nssm set $ServiceName Start SERVICE_AUTO_START
 
-# 崩溃自动重启（NSSM 层，守护脚本内还有一层）
+# Auto restart on crash (NSSM layer; supervisor has its own restart too)
 & $Nssm set $ServiceName AppExit Default Restart
 & $Nssm set $ServiceName AppRestartDelay 3000
 & $Nssm set $ServiceName AppStopMethodSkip 6
 
-# 日志（带轮转）
+# Logs with rotation
 & $Nssm set $ServiceName AppStdout (Join-Path $LogDir "service.log")
 & $Nssm set $ServiceName AppStderr (Join-Path $LogDir "service.log")
 & $Nssm set $ServiceName AppRotateFiles 1
 & $Nssm set $ServiceName AppRotateOnline 1
 & $Nssm set $ServiceName AppRotateBytes 10485760
 
-# 守护进程参数
+# Supervisor env
 & $Nssm set $ServiceName AppEnvironmentExtra "GIT_PULL_INTERVAL=$GitPullInterval" "WATCH_ENABLED=$WatchEnabled" "PYTHONIOENCODING=utf-8"
 
-# 4. 启动
+# 4. Start
 & $Nssm start $ServiceName
 Start-Sleep -Seconds 3
 & $Nssm status $ServiceName
 
 Write-Host ""
-Write-Host "[OK] 服务已安装并启动"
-Write-Host "     访问: http://127.0.0.1:8080"
-Write-Host "     日志: $LogDir\service.log"
-Write-Host "     管理: nssm start/stop/restart $ServiceName   或   services.msc"
+Write-Host "[OK] Service installed and started"
+Write-Host "     URL:  http://127.0.0.1:8080"
+Write-Host "     Logs: $LogDir\service.log"
+Write-Host "     Mgmt: nssm start/stop/restart $ServiceName   or   services.msc"
 Stop-Transcript | Out-Null

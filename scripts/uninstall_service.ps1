@@ -1,5 +1,5 @@
-﻿﻿#Requires -RunAsAdministrator
-# stock-random 卸载 Windows 系统服务
+#Requires -RunAsAdministrator
+# stock-random: uninstall Windows service
 $ErrorActionPreference = "Stop"
 
 $ServiceName = "stock-random"
@@ -8,11 +8,11 @@ $Nssm = Join-Path $Root "tools\nssm.exe"
 
 & $Nssm status $ServiceName *> $null
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[INFO] 服务 $ServiceName 不存在"
+    Write-Host "[INFO] Service $ServiceName does not exist"
     exit 0
 }
 
-Write-Host "[INFO] 停止并移除服务 $ServiceName ..."
+Write-Host "[INFO] Stopping and removing service $ServiceName ..."
 & $Nssm stop $ServiceName
 & $Nssm remove $ServiceName confirm
-Write-Host "[OK] 服务已卸载"
+Write-Host "[OK] Service uninstalled"

@@ -1,15 +1,14 @@
 @echo off
-chcp 65001 >nul
 REM ============================================================
-REM  stock-random 一键卸载系统服务
-REM  双击运行即可，会自动请求管理员权限
+REM  stock-random - one-click uninstall Windows service
+REM  Double-click to run; admin rights are requested via UAC
 REM ============================================================
 cd /d "%~dp0"
 
 net session >nul 2>nul
 if not errorlevel 1 goto :uninstall
 
-echo [INFO] 请求管理员权限...
+echo [INFO] Requesting administrator privileges...
 powershell -Command "Start-Process '%~f0' -Verb RunAs"
 exit /b
 
