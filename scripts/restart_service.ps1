@@ -1,4 +1,4 @@
-﻿#Requires -RunAsAdministrator
+﻿﻿#Requires -RunAsAdministrator
 # stock-random 重启 Windows 系统服务
 $ErrorActionPreference = "Stop"
 
