@@ -68,11 +68,12 @@ Write-Host "[INFO] Installing/updating deps (already-satisfied ones are skipped)
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # 2. Remove existing service instance first
-& $Nssm status $ServiceName *> $null
-if ($LASTEXITCODE -eq 0) {
+# NOTE: use Get-Service instead of "nssm status" -- with EAP=Stop, redirecting
+# native-command stderr turns "Can't open service!" into a terminating error.
+if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
     Write-Host "[INFO] Service already exists, removing old instance ..."
-    & $Nssm stop $ServiceName *> $null
-    & $Nssm remove $ServiceName confirm *> $null
+    & $Nssm stop $ServiceName | Out-Null
+    & $Nssm remove $ServiceName confirm | Out-Null
 }
 
 # 3. Register service

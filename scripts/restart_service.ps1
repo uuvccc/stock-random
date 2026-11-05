@@ -6,8 +6,9 @@ $ServiceName = "stock-random"
 $Root = Split-Path -Parent $PSScriptRoot
 $Nssm = Join-Path $Root "tools\nssm.exe"
 
-& $Nssm status $ServiceName *> $null
-if ($LASTEXITCODE -ne 0) {
+# NOTE: use Get-Service instead of "nssm status" -- with EAP=Stop, redirecting
+# native-command stderr turns "Can't open service!" into a terminating error.
+if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
     Write-Host "[ERROR] Service $ServiceName does not exist. Run install_service.bat first."
     exit 1
 }
