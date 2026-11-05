@@ -30,14 +30,38 @@ function Install-WithWinget([string]$Id, [string]$Name) {
     Update-SessionPath
 }
 
-# 0. Auto-install missing prerequisites: Python / Git / NSSM
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Host "[INFO] Python not found, installing ..."
+function Get-RealPython {
+    # Resolve a real CPython interpreter. The Microsoft Store alias
+    # (...WindowsApps\...python.exe) is a per-user stub and CANNOT be
+    # executed by services running as SYSTEM -- always reject it.
+    $candidates = @()
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { $candidates += $cmd.Source }
+    if (Get-Command py -ErrorAction SilentlyContinue) {
+        $exe = (& py -3 -c "import sys; print(sys.executable)" | Select-Object -First 1)
+        if ($exe) { $candidates += $exe.Trim() }
+    }
+    $candidates += "$env:ProgramFiles\Python312\python.exe"
+    $candidates += "$env:ProgramFiles\Python311\python.exe"
+    $candidates += "$env:LocalAppData\Programs\Python\Python312\python.exe"
+    $candidates += "$env:LocalAppData\Programs\Python\Python311\python.exe"
+    foreach ($c in $candidates) {
+        if ($c -and (Test-Path $c) -and $c -notmatch "WindowsApps") { return $c }
+    }
+    return $null
+}
+
+# 0. Auto-install missing prerequisites: real Python / Git / NSSM
+$PythonExe = Get-RealPython
+if (-not $PythonExe) {
+    Write-Host "[INFO] Real Python not found (Store stub cannot run as a service), installing ..."
     Install-WithWinget "Python.Python.3.12" "Python"
-    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-        throw "Python still not available after install. Open a new terminal and retry."
+    $PythonExe = Get-RealPython
+    if (-not $PythonExe) {
+        throw "Real Python still not found. Install Python 3.10+ from python.org and retry."
     }
 }
+Write-Host "[INFO] Using Python: $PythonExe"
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "[INFO] Git not found (needed for scheduled git pull), installing ..."
@@ -57,17 +81,7 @@ if (-not (Test-Path $Nssm)) {
     Remove-Item -Recurse -Force (Join-Path $Root "tools\nssm-tmp"), $zip
 }
 
-# 1. Prepare venv and install Python deps (idempotent)
-if (-not (Test-Path $VenvPy)) {
-    Write-Host "[INFO] Creating virtualenv .venv ..."
-    python -m venv (Join-Path $Root ".venv")
-}
-Write-Host "[INFO] Installing/updating deps (already-satisfied ones are skipped) ..."
-& $VenvPy -m pip install --quiet --upgrade pip
-& $VenvPy -m pip install --quiet -r (Join-Path $Root "requirements.txt")
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-
-# 2. Remove existing service instance first
+# 1. Remove existing service instance first (before touching .venv, to avoid file locks)
 # NOTE: use Get-Service instead of "nssm status" -- with EAP=Stop, redirecting
 # native-command stderr turns "Can't open service!" into a terminating error.
 if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
@@ -75,6 +89,27 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
     & $Nssm stop $ServiceName | Out-Null
     & $Nssm remove $ServiceName confirm | Out-Null
 }
+
+# 2. Prepare venv and install Python deps (idempotent)
+# Recreate .venv if it was built from the Microsoft Store stub (see pyvenv.cfg home=)
+$venvCfg = Join-Path $Root ".venv\pyvenv.cfg"
+$venvBad = $false
+if (Test-Path $venvCfg) {
+    $homeLine = Select-String -Path $venvCfg -Pattern '^home\s*=' | Select-Object -First 1
+    if ($homeLine -and $homeLine.Line -match "WindowsApps") { $venvBad = $true }
+}
+if ($venvBad) {
+    Write-Host "[INFO] Existing .venv points to the Store python stub, recreating ..."
+    Remove-Item -Recurse -Force (Join-Path $Root ".venv")
+}
+if (-not (Test-Path $VenvPy)) {
+    Write-Host "[INFO] Creating virtualenv .venv ..."
+    & $PythonExe -m venv (Join-Path $Root ".venv")
+}
+Write-Host "[INFO] Installing/updating deps (already-satisfied ones are skipped) ..."
+& $VenvPy -m pip install --quiet --upgrade pip
+& $VenvPy -m pip install --quiet -r (Join-Path $Root "requirements.txt")
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # 3. Register service
 Write-Host "[INFO] Registering service $ServiceName ..."
