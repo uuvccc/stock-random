@@ -1,4 +1,4 @@
-﻿# stock-random 服务实时状态监控
+﻿﻿# stock-random 服务实时状态监控
 # 用法：
 #   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1          # 每 3 秒刷新
 #   powershell -ExecutionPolicy Bypass -File scripts\status_service.ps1 -Once    # 只看一次
