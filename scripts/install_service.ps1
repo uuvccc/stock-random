@@ -41,8 +41,12 @@ function Get-RealPython {
         $exe = (& py -3 -c "import sys; print(sys.executable)" | Select-Object -First 1)
         if ($exe) { $candidates += $exe.Trim() }
     }
+    $candidates += "$env:ProgramFiles\Python314\python.exe"
+    $candidates += "$env:ProgramFiles\Python313\python.exe"
     $candidates += "$env:ProgramFiles\Python312\python.exe"
     $candidates += "$env:ProgramFiles\Python311\python.exe"
+    $candidates += "$env:LocalAppData\Programs\Python\Python314\python.exe"
+    $candidates += "$env:LocalAppData\Programs\Python\Python313\python.exe"
     $candidates += "$env:LocalAppData\Programs\Python\Python312\python.exe"
     $candidates += "$env:LocalAppData\Programs\Python\Python311\python.exe"
     foreach ($c in $candidates) {
@@ -91,25 +95,60 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
 }
 
 # 2. Prepare venv and install Python deps (idempotent)
-# Recreate .venv if it was built from the Microsoft Store stub (see pyvenv.cfg home=)
-$venvCfg = Join-Path $Root ".venv\pyvenv.cfg"
-$venvBad = $false
-if (Test-Path $venvCfg) {
-    $homeLine = Select-String -Path $venvCfg -Pattern '^home\s*=' | Select-Object -First 1
-    if ($homeLine -and $homeLine.Line -match "WindowsApps") { $venvBad = $true }
+# A .venv is stale if its base interpreter no longer exists (e.g. created by
+# Python 3.12 that was later uninstalled), was built from the Microsoft Store
+# stub, or simply cannot start. Validate by running it, not just by file check.
+$venvDir = Join-Path $Root ".venv"
+$venvCfg = Join-Path $venvDir "pyvenv.cfg"
+$venvBadReason = $null
+if (Test-Path $VenvPy) {
+    if (-not (Test-Path $venvCfg)) {
+        $venvBadReason = "pyvenv.cfg is missing"
+    } else {
+        $homeLine = Select-String -Path $venvCfg -Pattern '^home\s*=' | Select-Object -First 1
+        if (-not $homeLine) {
+            $venvBadReason = "pyvenv.cfg has no home entry"
+        } elseif ($homeLine.Line -match "WindowsApps") {
+            $venvBadReason = "built from the Microsoft Store python stub"
+        } else {
+            $homePath = ($homeLine.Line -replace '^home\s*=\s*', '').Trim()
+            if (-not (Test-Path $homePath)) {
+                $venvBadReason = "base interpreter is missing ($homePath)"
+            }
+        }
+    }
+    if (-not $venvBadReason) {
+        # NOTE: native-command stderr becomes a terminating error under EAP=Stop,
+        # so temporarily relax it while probing the venv interpreter.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & $VenvPy -c "import sys" *> $null
+        $venvOk = ($LASTEXITCODE -eq 0)
+        $ErrorActionPreference = $prevEap
+        if (-not $venvOk) { $venvBadReason = "venv python cannot start" }
+    }
+} elseif (Test-Path $venvDir) {
+    $venvBadReason = "venv python is missing"
 }
-if ($venvBad) {
-    Write-Host "[INFO] Existing .venv points to the Store python stub, recreating ..."
-    Remove-Item -Recurse -Force (Join-Path $Root ".venv")
+
+if ($venvBadReason) {
+    Write-Host "[INFO] Rebuilding .venv: $venvBadReason"
+    Remove-Item -Recurse -Force $venvDir
 }
+
 if (-not (Test-Path $VenvPy)) {
-    Write-Host "[INFO] Creating virtualenv .venv ..."
-    & $PythonExe -m venv (Join-Path $Root ".venv")
+    Write-Host "[INFO] Creating virtualenv .venv with $PythonExe ..."
+    & $PythonExe -m venv $venvDir
+    if (-not (Test-Path $VenvPy)) { throw "Failed to create virtualenv: $VenvPy not found" }
 }
+
 Write-Host "[INFO] Installing/updating deps (already-satisfied ones are skipped) ..."
 & $VenvPy -m pip install --quiet --upgrade pip
+if ($LASTEXITCODE -ne 0) { throw "Failed to upgrade pip inside .venv (see output above)" }
 & $VenvPy -m pip install --quiet -r (Join-Path $Root "requirements.txt")
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+if ($LASTEXITCODE -ne 0) {
+    throw "pip install failed (see output above). If this is a missing-wheel error, install Python 3.12 from python.org and rerun."
+}
 
 # 3. Register service
 Write-Host "[INFO] Registering service $ServiceName ..."
