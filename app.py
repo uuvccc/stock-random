@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import akshare as ak
 import pandas as pd
-from flask import Flask, jsonify, render_template
+from flask import Flask, jsonify, render_template, request
 
 # ---------------------------------------------------------------------------
 # 日志
@@ -226,6 +226,38 @@ def score_stocks(stocks: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 建议：仅供学习参考的简化规则 —— 综合评分 × 涨跌幅
+# 买入：综合评分 ≥ 75（活跃/极热）且 涨跌幅 ≥ 0
+# 卖出：涨跌幅 < -2（弱势），或 综合评分 < 35（冷清）
+# 不动：其他
+# ---------------------------------------------------------------------------
+def advice_stocks(stocks: list[dict]) -> None:
+    """就地写入 建议 / 建议原因。"""
+    for s in stocks:
+        score = s.get("综合评分")
+        pct = s.get("涨跌幅")
+        has_data = score is not None and pct is not None
+
+        if not has_data:
+            s["建议"] = "—"
+            s["建议原因"] = "行情数据不全"
+            continue
+
+        if score >= 75 and pct >= 0:
+            s["建议"] = "买入"
+            s["建议原因"] = f"{score}分·活跃且上涨"
+        elif pct < -2:
+            s["建议"] = "卖出"
+            s["建议原因"] = f"跌{pct:.1f}%·弱势"
+        elif score < 35:
+            s["建议"] = "卖出"
+            s["建议原因"] = f"{score}分·冷清"
+        else:
+            s["建议"] = "不动"
+            s["建议原因"] = f"{score}分·温和"
+
+
+# ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
 @app.route("/")
@@ -238,9 +270,32 @@ def api_random_five():
     if not ALL_STOCKS:
         return jsonify({"ok": False, "msg": "股票列表尚未加载完成，请稍后重试"}), 503
 
-    # 随机抽 5 只（去重，不足 5 只则返回实际数量）
-    sample_size = min(5, len(ALL_STOCKS))
-    picks = random.sample(ALL_STOCKS, sample_size)
+    # 1) 先从收藏里挑（前端传 ?favorites=code1,code2,...），上限 5 只
+    favs_raw = request.args.get("favorites", "")
+    fav_codes: list[str] = []
+    if favs_raw:
+        known = {c for c, _ in ALL_STOCKS}
+        for c in favs_raw.split(","):
+            if len(fav_codes) >= 5:
+                break
+            c = c.strip()
+            if c and c in known and c not in fav_codes:
+                fav_codes.append(c)
+
+    # 2) 剩余名额随机补足
+    need = max(0, 5 - len(fav_codes))
+    picks: list[tuple[str, str]] = []
+    if fav_codes:
+        fav_map = {c: n for c, n in ALL_STOCKS if c in fav_codes}
+        for c in fav_codes:
+            picks.append((c, fav_map[c]))
+
+    if need > 0:
+        # 排除已在收藏里的
+        pool = [(c, n) for c, n in ALL_STOCKS if c not in fav_codes]
+        extra = random.sample(pool, min(need, len(pool))) if pool else []
+        picks.extend(extra)
+
     codes = [c for c, _ in picks]
 
     quotes = fetch_realtime_quotes(codes)
@@ -262,12 +317,14 @@ def api_random_five():
             })
 
     score_stocks(stocks_out)
+    advice_stocks(stocks_out)
 
     ok_count = sum(1 for s in stocks_out if s["最新价"] is not None)
     return jsonify({
         "ok": True,
         "requested": 5,
         "fetched": ok_count,
+        "favorites": fav_codes,
         "stocks": stocks_out,
     })
 

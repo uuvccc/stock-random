@@ -115,6 +115,7 @@
             margin-bottom: 12px;
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
             animation: rise .35s ease both;
+            position: relative;
         }
         @keyframes rise {
             from { opacity: 0; transform: translateY(10px); }
@@ -222,6 +223,81 @@
             transition: width .5s ease;
         }
 
+        /* 卡片右上角收藏按钮 */
+        .fav-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 32px;
+            height: 32px;
+            border: none;
+            background: transparent;
+            font-size: 22px;
+            line-height: 32px;
+            text-align: center;
+            cursor: pointer;
+            color: #d0d0d0;
+            padding: 0;
+            transition: color .15s, transform .15s;
+            z-index: 2;
+        }
+        .fav-btn.active {
+            color: #f5a623;
+        }
+        .fav-btn:active { transform: scale(1.2); }
+
+        /* 建议 pill */
+        .advice-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 10px;
+            margin-left: auto;
+            white-space: nowrap;
+        }
+        .advice-pill.buy   { background: rgba(230, 57, 70, 0.10); color: #e63946; }
+        .advice-pill.sell  { background: rgba(43, 164, 113, 0.12); color: #2ba471; }
+        .advice-pill.hold  { background: rgba(120, 120, 120, 0.12); color: #888; }
+        .advice-pill.na    { background: #f0f0f0; color: #bbb; }
+
+        /* header 里的收藏计数 */
+        .fav-count {
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            font-size: 11px;
+            color: #888;
+            padding: 3px 8px;
+            border-radius: 10px;
+            background: rgba(0, 0, 0, 0.04);
+            margin-left: 4px;
+        }
+        .fav-count.full { background: rgba(245, 166, 35, 0.12); color: #d48806; }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: calc(100px + env(safe-area-inset-bottom));
+            transform: translateX(-50%) translateY(20px);
+            background: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            font-size: 13px;
+            padding: 10px 20px;
+            border-radius: 20px;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity .25s, transform .25s;
+            pointer-events: none;
+        }
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
         .na { color: #bbb; font-size: 13px; }
         .na-hint { font-size: 12px; color: #bbb; margin-top: 6px; }
 
@@ -269,6 +345,14 @@
             .empty { color: #666; }
             .na, .na-hint { color: #555; }
             .footer { color: #555; }
+            .advice-pill.buy   { background: rgba(255, 92, 106, 0.15); color: #ff5c6a; }
+            .advice-pill.sell  { background: rgba(61, 220, 151, 0.15); color: #3ddc97; }
+            .advice-pill.hold  { background: rgba(200, 200, 200, 0.10); color: #aaa; }
+            .advice-pill.na    { background: #2a2e34; color: #666; }
+            .fav-btn { color: #555; }
+            .fav-btn.active { color: #f5a623; }
+            .fav-count { background: rgba(255, 255, 255, 0.05); color: #999; }
+            .fav-count.full { background: rgba(245, 166, 35, 0.18); color: #f5a623; }
         }
 
         /* ---------- 减少动效 ---------- */
@@ -283,7 +367,7 @@
     <div class="app">
         <div class="header">
             <div>
-                <div class="title">随机 A 股行情</div>
+                <div class="title">随机 A 股行情<span class="fav-count" id="favCount">★ 0/5</span></div>
                 <div class="subtitle" id="subtitle">加载中…</div>
             </div>
             <span class="hint">点击右下角换一批</span>
@@ -296,10 +380,64 @@
 
     <button class="fab" id="btn" aria-label="换一批">↻</button>
 
+    <div class="toast" id="toast"></div>
+
     <script>
         const btn     = document.getElementById('btn');
         const listEl  = document.getElementById('list');
         const subEl   = document.getElementById('subtitle');
+        const favCountEl = document.getElementById('favCount');
+        const toastEl = document.getElementById('toast');
+
+        // ---------- 收藏（localStorage，最多 5 只） ----------
+        const FAV_KEY = 'stock_favorites_v1';
+        const FAV_MAX = 5;
+
+        function Fav() {
+            let codes = [];
+            try {
+                codes = JSON.parse(localStorage.getItem(FAV_KEY) || '[]');
+                if (!Array.isArray(codes)) codes = [];
+            } catch { codes = []; }
+            // 清洗：字符串、去重、截断
+            codes = [...new Set(codes.map(c => String(c).trim()).filter(Boolean))].slice(0, FAV_MAX);
+            localStorage.setItem(FAV_KEY, JSON.stringify(codes));
+            return codes;
+        }
+        function FavSave(codes) {
+            localStorage.setItem(FAV_KEY, JSON.stringify(codes.slice(0, FAV_MAX)));
+        }
+        function FavHas(code) { return Fav().includes(code); }
+        function FavToggle(code) {
+            const codes = Fav();
+            const idx = codes.indexOf(code);
+            if (idx >= 0) {
+                codes.splice(idx, 1);
+                FavSave(codes);
+                return { action: 'removed', count: codes.length };
+            }
+            if (codes.length >= FAV_MAX) {
+                return { action: 'full', count: codes.length };
+            }
+            codes.push(code);
+            FavSave(codes);
+            return { action: 'added', count: codes.length };
+        }
+
+        function updateFavCount() {
+            const n = Fav().length;
+            favCountEl.textContent = `★ ${n}/${FAV_MAX}`;
+            favCountEl.classList.toggle('full', n >= FAV_MAX);
+        }
+
+        // ---------- Toast ----------
+        let _toastTimer = null;
+        function showToast(msg) {
+            toastEl.textContent = msg;
+            toastEl.classList.add('show');
+            if (_toastTimer) clearTimeout(_toastTimer);
+            _toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1600);
+        }
 
         function fmtNum(v, digits = 2) {
             if (v === null || v === undefined || isNaN(v)) return '—';
@@ -341,7 +479,16 @@
             const text = s['综合评分'] === null || s['综合评分'] === undefined
                 ? '无评分'
                 : `${fmtScore(s['综合评分'])} · ${s['评级'] || ''}`;
-            return `<div class="rating-row">${starsHtml(s['星级'])}<span class="rating-text">${text}</span></div>`;
+            return `<div class="rating-row">${starsHtml(s['星级'])}<span class="rating-text">${text}</span>${advicePillHtml(s)}</div>`;
+        }
+        function advicePillHtml(s) {
+            const a = s['建议'];
+            const r = s['建议原因'] || '';
+            let cls = 'na', label = '—';
+            if (a === '买入') { cls = 'buy'; label = '↑ 买入'; }
+            else if (a === '卖出') { cls = 'sell'; label = '↓ 卖出'; }
+            else if (a === '不动') { cls = 'hold'; label = '· 不动'; }
+            return `<span class="advice-pill ${cls}" title="${r}">${label}</span>`;
         }
         function scoreBarHtml(score) {
             const w = (score === null || score === undefined || isNaN(score))
@@ -377,13 +524,17 @@
             }
             const html = list.map((s, i) => {
                 const hasPrice = s['最新价'] !== null && s['最新价'] !== undefined;
+                const code = s['代码'] || '';
+                const isFav = FavHas(code);
+                const favHtml = `<button class="fav-btn ${isFav ? 'active' : ''}" data-code="${code}" aria-label="收藏">${isFav ? '★' : '☆'}</button>`;
                 if (!hasPrice) {
                     return `
                         <div class="card" style="animation-delay:${i * 60}ms">
+                            ${favHtml}
                             <div class="card-top">
                                 <div>
                                     <span class="stock-name">${s['名称'] || ''}</span>
-                                    <span class="stock-code">${s['代码'] || ''}</span>
+                                    <span class="stock-code">${code}</span>
                                 </div>
                                 <span class="na">—</span>
                             </div>
@@ -393,10 +544,11 @@
                 const cls = pctClass(s['涨跌幅']);
                 return `
                     <div class="card" style="animation-delay:${i * 60}ms">
+                        ${favHtml}
                         <div class="card-top">
                             <div>
                                 <span class="stock-name">${s['名称'] || ''}</span>
-                                <span class="stock-code">${s['代码'] || ''}</span>
+                                <span class="stock-code">${code}</span>
                             </div>
                             <div class="quote">
                                 <span class="price ${cls}">${fmtNum(s['最新价'])}</span>
@@ -417,7 +569,11 @@
             btn.disabled = true;
             renderLoading('正在获取行情…');
             try {
-                const res = await fetch('/api/random-five');
+                const favCodes = Fav().join(',');
+                const url = favCodes
+                    ? `/api/random-five?favorites=${encodeURIComponent(favCodes)}`
+                    : '/api/random-five';
+                const res = await fetch(url);
                 const data = await res.json();
                 if (!data.ok) {
                     renderEmpty(data.msg || '服务暂不可用');
@@ -436,7 +592,28 @@
 
         btn.addEventListener('click', load);
 
-        // 页面打开自动加载
+        // 收藏按钮事件委托（避免每个按钮单独绑监听；点击后阻止冒泡）
+        listEl.addEventListener('click', (e) => {
+            const btn = e.target.closest('.fav-btn');
+            if (!btn) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const code = btn.dataset.code;
+            if (!code) return;
+            const r = FavToggle(code);
+            updateFavCount();
+            if (r.action === 'full') {
+                showToast('最多收藏 5 只，先取消一些吧');
+                return;
+            }
+            // 同步更新这个按钮的 UI
+            btn.classList.toggle('active', r.action === 'added');
+            btn.textContent = r.action === 'added' ? '★' : '☆';
+            showToast(r.action === 'added' ? '已收藏' : '已取消收藏');
+        });
+
+        // 页面打开：先更新收藏计数，再加载行情
+        updateFavCount();
         load();
     </script>
 </body>
